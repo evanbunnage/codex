@@ -49,6 +49,32 @@ just test
 cargo test --all-features
 ```
 
+### Install this fork side-by-side as `ebcodex`
+
+If you want to keep your existing `codex` install untouched, this repo includes a helper that
+builds the normal `codex` binary from source and installs a renamed copy as `ebcodex` under
+`~/.local/bin`.
+
+From the repo root:
+
+```bash
+just install-ebcodex
+```
+
+Or, if you do not have `just` installed:
+
+```bash
+./scripts/install-ebcodex.sh
+```
+
+By default this builds a release binary and installs it to `~/.local/bin/ebcodex`. You can
+override the install directory or build profile:
+
+```bash
+INSTALL_DIR="$HOME/bin" just install-ebcodex
+PROFILE=debug just install-ebcodex
+```
+
 ## Tracing / verbose logging
 
 Codex is written in Rust, so it honors the `RUST_LOG` environment variable to configure its logging behavior.

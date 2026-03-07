@@ -37,6 +37,10 @@ install:
     rustup show active-toolchain
     cargo fetch
 
+[no-cd]
+install-ebcodex:
+    ./scripts/install-ebcodex.sh
+
 # Run `cargo nextest` since it's faster than `cargo test`, though including
 # --no-fail-fast is important to ensure all tests are run.
 #

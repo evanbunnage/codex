@@ -3570,9 +3570,13 @@ impl App {
             AppEvent::SubmitUserMessageWithMode {
                 text,
                 collaboration_mode,
+                service_tier,
             } => {
-                self.chat_widget
-                    .submit_user_message_with_mode(text, collaboration_mode);
+                self.chat_widget.submit_user_message_with_mode(
+                    text,
+                    collaboration_mode,
+                    service_tier,
+                );
             }
             AppEvent::ManageSkillsClosed => {
                 self.chat_widget.handle_manage_skills_closed();
@@ -4553,6 +4557,7 @@ mod tests {
                 reasoning_effort: None,
                 developer_instructions: None,
             },
+            None,
         );
         let expected_input_state = app
             .chat_widget

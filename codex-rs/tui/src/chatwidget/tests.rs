@@ -1199,6 +1199,7 @@ async fn queued_restore_with_remote_images_keeps_local_placeholder_mapping() {
         remote_image_urls: remote_image_urls.clone(),
         text_elements: text_elements.clone(),
         mention_bindings: Vec::new(),
+        service_tier: None,
     });
 
     assert_eq!(chat.bottom_pane.composer_text(), text);
@@ -1244,6 +1245,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         remote_image_urls: Vec::new(),
         text_elements: first_elements,
         mention_bindings: Vec::new(),
+        service_tier: None,
     });
     chat.queued_user_messages.push_back(UserMessage {
         text: second_text,
@@ -1254,6 +1256,7 @@ async fn interrupted_turn_restores_queued_messages_with_images_and_elements() {
         remote_image_urls: Vec::new(),
         text_elements: second_elements,
         mention_bindings: Vec::new(),
+        service_tier: None,
     });
     chat.refresh_pending_input_preview();
 
@@ -1324,6 +1327,7 @@ async fn interrupted_turn_restore_keeps_active_mode_for_resubmission() {
         remote_image_urls: Vec::new(),
         text_elements: Vec::new(),
         mention_bindings: Vec::new(),
+        service_tier: None,
     });
     chat.refresh_pending_input_preview();
 
@@ -1386,6 +1390,7 @@ async fn remap_placeholders_uses_attachment_labels() {
         local_images: attachments,
         remote_image_urls: vec!["https://example.com/a.png".to_string()],
         mention_bindings: Vec::new(),
+        service_tier: None,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -1452,6 +1457,7 @@ async fn remap_placeholders_uses_byte_ranges_when_placeholder_missing() {
         local_images: attachments,
         remote_image_urls: Vec::new(),
         mention_bindings: Vec::new(),
+        service_tier: None,
     };
     let mut next_label = 3usize;
     let remapped = remap_placeholders_for_message(message, &mut next_label);
@@ -2463,12 +2469,46 @@ async fn plan_implementation_popup_yes_emits_submit_message_event() {
     let AppEvent::SubmitUserMessageWithMode {
         text,
         collaboration_mode,
+        service_tier,
     } = event
     else {
         panic!("expected SubmitUserMessageWithMode, got {event:?}");
     };
     assert_eq!(text, PLAN_IMPLEMENTATION_CODING_MESSAGE);
     assert_eq!(collaboration_mode.mode, Some(ModeKind::Default));
+    assert_eq!(service_tier, Some(Some(ServiceTier::Fast)));
+}
+
+#[tokio::test]
+async fn plan_implementation_popup_fast_mode_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.set_feature_enabled(Feature::FastMode, true);
+    chat.open_plan_implementation_prompt();
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert_snapshot!("plan_implementation_popup_fast_mode", popup);
+}
+
+#[tokio::test]
+async fn plan_implementation_popup_yes_emits_fast_submit_message_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.set_feature_enabled(Feature::FastMode, true);
+    chat.open_plan_implementation_prompt();
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected AppEvent");
+    let AppEvent::SubmitUserMessageWithMode {
+        text,
+        collaboration_mode,
+        service_tier,
+    } = event
+    else {
+        panic!("expected SubmitUserMessageWithMode, got {event:?}");
+    };
+    assert_eq!(text, PLAN_IMPLEMENTATION_CODING_MESSAGE);
+    assert_eq!(collaboration_mode.mode, Some(ModeKind::Default));
+    assert_eq!(service_tier, Some(Some(ServiceTier::Fast)));
 }
 
 #[tokio::test]
@@ -2479,7 +2519,7 @@ async fn submit_user_message_with_mode_sets_coding_collaboration_mode() {
 
     let default_mode = collaboration_modes::default_mode_mask(chat.models_manager.as_ref())
         .expect("expected default collaboration mode");
-    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode);
+    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode, None);
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn {
@@ -2495,6 +2535,38 @@ async fn submit_user_message_with_mode_sets_coding_collaboration_mode() {
             panic!("expected Op::UserTurn with default collab mode, got {other:?}")
         }
     }
+}
+
+#[tokio::test]
+async fn submit_user_message_with_mode_overrides_service_tier_for_one_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    let default_mode = collaboration_modes::default_mode_mask(chat.models_manager.as_ref())
+        .expect("expected default collaboration mode");
+    chat.submit_user_message_with_mode(
+        "Implement the plan.".to_string(),
+        default_mode,
+        Some(Some(ServiceTier::Fast)),
+    );
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            service_tier: Some(Some(ServiceTier::Fast)),
+            collaboration_mode:
+                Some(CollaborationMode {
+                    mode: ModeKind::Default,
+                    ..
+                }),
+            personality: None,
+            ..
+        } => {}
+        other => {
+            panic!("expected Op::UserTurn with fast service tier override, got {other:?}")
+        }
+    }
+    assert_eq!(chat.current_service_tier(), None);
 }
 
 #[tokio::test]
@@ -2890,7 +2962,7 @@ async fn submit_user_message_with_mode_errors_when_mode_changes_during_running_t
 
     let default_mode = collaboration_modes::default_mask(chat.models_manager.as_ref())
         .expect("expected default collaboration mode");
-    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode);
+    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode, None);
 
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
     assert!(chat.queued_user_messages.is_empty());
@@ -2917,7 +2989,7 @@ async fn submit_user_message_with_mode_allows_same_mode_during_running_turn() {
     chat.set_collaboration_mask(plan_mask.clone());
     chat.on_task_started();
 
-    chat.submit_user_message_with_mode("Continue planning.".to_string(), plan_mask);
+    chat.submit_user_message_with_mode("Continue planning.".to_string(), plan_mask, None);
 
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
     assert!(chat.queued_user_messages.is_empty());
@@ -2952,7 +3024,7 @@ async fn submit_user_message_with_mode_submits_when_plan_stream_is_not_active() 
     let expected_mode = default_mode
         .mode
         .expect("expected default collaboration mode kind");
-    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode);
+    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode, None);
 
     assert_eq!(chat.active_collaboration_mode_kind(), expected_mode);
     assert!(chat.queued_user_messages.is_empty());
@@ -4227,6 +4299,7 @@ async fn item_completed_pops_pending_steer_with_local_image_and_text_elements() 
         remote_image_urls: Vec::new(),
         text_elements,
         mention_bindings: Vec::new(),
+        service_tier: None,
     });
 
     match next_submit_op(&mut op_rx) {
@@ -4332,6 +4405,7 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
             mention: "sample".to_string(),
             path: "plugin://sample@test".to_string(),
         }],
+        service_tier: None,
     });
 
     let Op::UserTurn { items, .. } = next_submit_op(&mut op_rx) else {
@@ -10403,6 +10477,23 @@ async fn status_line_fast_mode_renders_on_and_off() {
 }
 
 #[tokio::test]
+async fn status_line_default_footer_appends_fast_mode_tag() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.setup_status_line(vec![
+        StatusLineItem::ModelWithReasoning,
+        StatusLineItem::CurrentDir,
+    ]);
+
+    chat.set_service_tier(Some(ServiceTier::Fast));
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.4 default · ~/projects/codex/codex-rs/tui · fast mode".to_string())
+    );
+}
+
+#[tokio::test]
 async fn status_line_fast_mode_footer_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -10422,50 +10513,17 @@ async fn status_line_fast_mode_footer_snapshot() {
     assert_snapshot!("status_line_fast_mode_footer", terminal.backend());
 }
 
-#[tokio::test]
-async fn status_line_model_with_reasoning_includes_fast_for_gpt54_only() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.config.cwd = PathBuf::from("/tmp/project");
-    chat.config.tui_status_line = Some(vec![
-        "model-with-reasoning".to_string(),
-        "context-remaining".to_string(),
-        "current-dir".to_string(),
-    ]);
-    chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
-    chat.set_service_tier(Some(ServiceTier::Fast));
-    set_chatgpt_auth(&mut chat);
-    chat.refresh_status_line();
-
-    assert_eq!(
-        status_line_text(&chat),
-        Some("gpt-5.4 xhigh fast · 100% left · /tmp/project".to_string())
-    );
-
-    chat.set_model("gpt-5.3-codex");
-    chat.refresh_status_line();
-
-    assert_eq!(
-        status_line_text(&chat),
-        Some("gpt-5.3-codex xhigh · 100% left · /tmp/project".to_string())
-    );
-}
-
-#[tokio::test]
-async fn status_line_model_with_reasoning_fast_footer_snapshot() {
+async fn status_line_default_footer_fast_mode_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.show_welcome_banner = false;
-    chat.config.cwd = PathBuf::from("/tmp/project");
-    chat.config.tui_status_line = Some(vec![
-        "model-with-reasoning".to_string(),
-        "context-remaining".to_string(),
-        "current-dir".to_string(),
+    chat.setup_status_line(vec![
+        StatusLineItem::ModelWithReasoning,
+        StatusLineItem::CurrentDir,
     ]);
-    chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
     chat.set_service_tier(Some(ServiceTier::Fast));
-    set_chatgpt_auth(&mut chat);
     chat.refresh_status_line();
 
     let width = 80;
@@ -10473,11 +10531,8 @@ async fn status_line_model_with_reasoning_fast_footer_snapshot() {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
-        .expect("draw model-with-reasoning footer");
-    assert_snapshot!(
-        "status_line_model_with_reasoning_fast_footer",
-        terminal.backend()
-    );
+        .expect("draw fast-mode footer");
+    assert_snapshot!("status_line_default_footer_fast_mode", terminal.backend());
 }
 
 #[tokio::test]

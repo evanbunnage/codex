@@ -163,6 +163,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
@@ -843,6 +844,7 @@ pub(crate) struct UserMessage {
     remote_image_urls: Vec<String>,
     text_elements: Vec<TextElement>,
     mention_bindings: Vec<MentionBinding>,
+    service_tier: Option<Option<ServiceTier>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -885,6 +887,7 @@ impl From<String> for UserMessage {
             // Plain text conversion has no UI element ranges.
             text_elements: Vec::new(),
             mention_bindings: Vec::new(),
+            service_tier: None,
         }
     }
 }
@@ -898,6 +901,7 @@ impl From<&str> for UserMessage {
             // Plain text conversion has no UI element ranges.
             text_elements: Vec::new(),
             mention_bindings: Vec::new(),
+            service_tier: None,
         }
     }
 }
@@ -930,6 +934,7 @@ pub(crate) fn create_initial_user_message(
             remote_image_urls: Vec::new(),
             text_elements,
             mention_bindings: Vec::new(),
+            service_tier: None,
         })
     }
 }
@@ -960,6 +965,7 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
         local_images,
         remote_image_urls,
         mention_bindings,
+        service_tier,
     } = message;
     if local_images.is_empty() {
         return UserMessage {
@@ -968,6 +974,7 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
             local_images,
             remote_image_urls,
             mention_bindings,
+            service_tier,
         };
     }
 
@@ -1024,6 +1031,7 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
         remote_image_urls,
         text_elements: rebuilt_elements,
         mention_bindings,
+        service_tier,
     }
 }
 
@@ -1034,6 +1042,7 @@ fn merge_user_messages(messages: Vec<UserMessage>) -> UserMessage {
         local_images: Vec::new(),
         remote_image_urls: Vec::new(),
         mention_bindings: Vec::new(),
+        service_tier: None,
     };
     let total_remote_images = messages
         .iter()
@@ -1051,6 +1060,7 @@ fn merge_user_messages(messages: Vec<UserMessage>) -> UserMessage {
             local_images,
             remote_image_urls,
             mention_bindings,
+            service_tier: _,
         } = remap_placeholders_for_message(message, &mut next_image_label);
         append_text_with_rebased_elements(
             &mut combined.text,
@@ -1262,17 +1272,28 @@ impl ChatWidget {
             self.request_status_line_branch(cwd);
         }
 
-        let mut parts = Vec::new();
+        let show_fast_mode_tag = matches!(self.config.service_tier, Some(ServiceTier::Fast))
+            && !items.contains(&StatusLineItem::FastMode);
+        let mut parts: Vec<Span<'static>> = Vec::new();
         for item in items {
-            if let Some(value) = self.status_line_value_for_item(&item) {
-                parts.push(value);
+            if let Some(mut value) = self.status_line_value_for_item(&item) {
+                if !parts.is_empty() {
+                    parts.push(" · ".into());
+                }
+                parts.append(&mut value);
             }
+        }
+        if show_fast_mode_tag {
+            if !parts.is_empty() {
+                parts.push(" · ".into());
+            }
+            parts.push("fast mode".red());
         }
 
         let line = if parts.is_empty() {
             None
         } else {
-            Some(Line::from(parts.join(" · ")))
+            Some(Line::from(parts))
         };
         self.set_status_line(line);
     }
@@ -1817,10 +1838,12 @@ impl ChatWidget {
         let (implement_actions, implement_disabled_reason) = match default_mask {
             Some(mask) => {
                 let user_text = PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string();
+                let service_tier = self.fast_mode_enabled().then_some(Some(ServiceTier::Fast));
                 let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                     tx.send(AppEvent::SubmitUserMessageWithMode {
                         text: user_text.clone(),
                         collaboration_mode: mask.clone(),
+                        service_tier,
                     });
                 })];
                 (actions, None)
@@ -1830,7 +1853,11 @@ impl ChatWidget {
         let items = vec![
             SelectionItem {
                 name: PLAN_IMPLEMENTATION_YES.to_string(),
-                description: Some("Switch to Default and start coding.".to_string()),
+                description: Some(if self.fast_mode_enabled() {
+                    "Switch to Default and start coding in Fast mode.".to_string()
+                } else {
+                    "Switch to Default and start coding.".to_string()
+                }),
                 selected_description: None,
                 is_current: false,
                 actions: implement_actions,
@@ -2229,6 +2256,7 @@ impl ChatWidget {
             local_images: self.bottom_pane.composer_local_images(),
             remote_image_urls: self.bottom_pane.remote_image_urls(),
             mention_bindings: self.bottom_pane.composer_mention_bindings(),
+            service_tier: None,
         };
 
         let mut to_merge: Vec<UserMessage> = self
@@ -2254,6 +2282,7 @@ impl ChatWidget {
             remote_image_urls,
             text_elements,
             mention_bindings,
+            service_tier: _,
         } = user_message;
         let local_image_paths = local_images.into_iter().map(|img| img.path).collect();
         self.set_remote_image_urls(remote_image_urls);
@@ -4170,6 +4199,7 @@ impl ChatWidget {
                         mention_bindings: self
                             .bottom_pane
                             .take_recent_submission_mention_bindings(),
+                        service_tier: None,
                     };
                     if user_message.text.is_empty()
                         && user_message.local_images.is_empty()
@@ -4211,6 +4241,7 @@ impl ChatWidget {
                         mention_bindings: self
                             .bottom_pane
                             .take_recent_submission_mention_bindings(),
+                        service_tier: None,
                     };
                     let Some(user_message) =
                         self.maybe_defer_user_message_for_realtime(user_message)
@@ -4706,6 +4737,7 @@ impl ChatWidget {
                     remote_image_urls,
                     text_elements: prepared_elements,
                     mention_bindings: self.bottom_pane.take_recent_submission_mention_bindings(),
+                    service_tier: None,
                 };
                 if self.is_session_configured() {
                     self.reasoning_buffer.clear();
@@ -4861,6 +4893,7 @@ impl ChatWidget {
             remote_image_urls,
             text_elements,
             mention_bindings,
+            service_tier,
         } = user_message;
         if text.is_empty() && local_images.is_empty() && remote_image_urls.is_empty() {
             return;
@@ -5039,6 +5072,7 @@ impl ChatWidget {
                 remote_image_urls: remote_image_urls.clone(),
                 text_elements: text_elements.clone(),
                 mention_bindings: mention_bindings.clone(),
+                service_tier,
             },
             compare_key: Self::pending_steer_compare_key_from_items(&items),
         });
@@ -5047,7 +5081,7 @@ impl ChatWidget {
             .personality
             .filter(|_| self.config.features.enabled(Feature::Personality))
             .filter(|_| self.current_model_supports_personality());
-        let service_tier = self.config.service_tier.map(Some);
+        let service_tier = service_tier.or_else(|| self.config.service_tier.map(Some));
         let op = Op::UserTurn {
             items,
             cwd: self.config.cwd.clone(),
@@ -5705,8 +5739,13 @@ impl ChatWidget {
         let view = StatusLineSetupView::new(
             Some(configured_status_line_items.as_slice()),
             StatusLinePreviewData::from_iter(StatusLineItem::iter().filter_map(|item| {
-                self.status_line_value_for_item(&item)
-                    .map(|value| (item, value))
+                self.status_line_value_for_item(&item).map(|value| {
+                    let value = value
+                        .into_iter()
+                        .map(|span| span.content.into_owned())
+                        .collect::<String>();
+                    (item, value)
+                })
             })),
             self.app_event_tx.clone(),
         );
@@ -5825,41 +5864,48 @@ impl ChatWidget {
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
     /// this to keep partially available status lines readable while waiting for session, token, or
     /// git metadata.
-    fn status_line_value_for_item(&self, item: &StatusLineItem) -> Option<String> {
+    fn status_line_value_for_item(&self, item: &StatusLineItem) -> Option<Vec<Span<'static>>> {
         match item {
-            StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
+            StatusLineItem::ModelName => {
+                Some(vec![Span::raw(self.model_display_name().to_string())])
+            }
             StatusLineItem::ModelWithReasoning => {
                 let label =
                     Self::status_line_reasoning_effort_label(self.effective_reasoning_effort());
-                let fast_label = if self
-                    .should_show_fast_status(self.current_model(), self.config.service_tier)
-                {
-                    " fast"
-                } else {
-                    ""
-                };
-                Some(format!("{} {label}{fast_label}", self.model_display_name()))
+                Some(vec![Span::raw(format!(
+                    "{} {label}",
+                    self.model_display_name()
+                ))])
             }
-            StatusLineItem::CurrentDir => {
-                Some(format_directory_display(self.status_line_cwd(), None))
-            }
-            StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
-            StatusLineItem::GitBranch => self.status_line_branch.clone(),
+            StatusLineItem::CurrentDir => Some(vec![Span::raw(format_directory_display(
+                self.status_line_cwd(),
+                None,
+            ))]),
+            StatusLineItem::ProjectRoot => self
+                .status_line_project_root_name()
+                .map(|value| vec![Span::raw(value)]),
+            StatusLineItem::GitBranch => self
+                .status_line_branch
+                .clone()
+                .map(|value| vec![Span::raw(value)]),
             StatusLineItem::UsedTokens => {
                 let usage = self.status_line_total_usage();
                 let total = usage.tokens_in_context_window();
                 if total <= 0 {
                     None
                 } else {
-                    Some(format!("{} used", format_tokens_compact(total)))
+                    Some(vec![Span::raw(format!(
+                        "{} used",
+                        format_tokens_compact(total)
+                    ))])
                 }
             }
             StatusLineItem::ContextRemaining => self
                 .status_line_context_remaining_percent()
-                .map(|remaining| format!("{remaining}% left")),
+                .map(|remaining| vec![Span::raw(format!("{remaining}% left"))]),
             StatusLineItem::ContextUsed => self
                 .status_line_context_used_percent()
-                .map(|used| format!("{used}% used")),
+                .map(|used| vec![Span::raw(format!("{used}% used"))]),
             StatusLineItem::FiveHourLimit => {
                 let window = self
                     .rate_limit_snapshots_by_limit_id
@@ -5870,6 +5916,7 @@ impl ChatWidget {
                     .map(get_limits_duration)
                     .unwrap_or_else(|| "5h".to_string());
                 self.status_line_limit_display(window, &label)
+                    .map(|value| vec![Span::raw(value)])
             }
             StatusLineItem::WeeklyLimit => {
                 let window = self
@@ -5881,25 +5928,26 @@ impl ChatWidget {
                     .map(get_limits_duration)
                     .unwrap_or_else(|| "weekly".to_string());
                 self.status_line_limit_display(window, &label)
+                    .map(|value| vec![Span::raw(value)])
             }
-            StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
+            StatusLineItem::CodexVersion => Some(vec![Span::raw(CODEX_CLI_VERSION)]),
             StatusLineItem::ContextWindowSize => self
                 .status_line_context_window_size()
-                .map(|cws| format!("{} window", format_tokens_compact(cws))),
-            StatusLineItem::TotalInputTokens => Some(format!(
+                .map(|cws| vec![Span::raw(format!("{} window", format_tokens_compact(cws)))]),
+            StatusLineItem::TotalInputTokens => Some(vec![Span::raw(format!(
                 "{} in",
                 format_tokens_compact(self.status_line_total_usage().input_tokens)
-            )),
-            StatusLineItem::TotalOutputTokens => Some(format!(
+            ))]),
+            StatusLineItem::TotalOutputTokens => Some(vec![Span::raw(format!(
                 "{} out",
                 format_tokens_compact(self.status_line_total_usage().output_tokens)
-            )),
-            StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
+            ))]),
+            StatusLineItem::SessionId => self.thread_id.map(|id| vec![Span::raw(id.to_string())]),
             StatusLineItem::FastMode => Some(
                 if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {
-                    "Fast on".to_string()
+                    vec!["Fast on".into()]
                 } else {
-                    "Fast off".to_string()
+                    vec!["Fast off".into()]
                 },
             ),
         }
@@ -8713,6 +8761,7 @@ impl ChatWidget {
         &mut self,
         text: String,
         mut collaboration_mode: CollaborationModeMask,
+        service_tier: Option<Option<ServiceTier>>,
     ) {
         if collaboration_mode.mode == Some(ModeKind::Plan)
             && let Some(effort) = self.config.plan_mode_reasoning_effort
@@ -8735,6 +8784,7 @@ impl ChatWidget {
             remote_image_urls: Vec::new(),
             text_elements: Vec::new(),
             mention_bindings: Vec::new(),
+            service_tier,
         };
         if should_queue {
             self.queue_user_message(user_message);
