@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ github.repository == 'openai/codex' && (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -455,7 +455,7 @@ jobs:
     runs-on: ${{ matrix.runs_on || matrix.runner }}
     timeout-minutes: 30
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ github.repository == 'openai/codex' && (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -673,6 +673,13 @@ jobs:
           # declare success regardless of other jobs.
           if [[ '${{ needs.changed.outputs.codex }}' != 'true' && '${{ needs.changed.outputs.workflows }}' != 'true' && '${{ github.event_name }}' != 'push' ]]; then
             echo 'No relevant changes -> CI not required.'
+            exit 0
+          fi
+
+          if [[ '${{ github.repository }}' != 'openai/codex' ]]; then
+            echo 'Fork repo -> skipping runner-group Rust jobs.'
+            [[ '${{ needs.general.result }}' == 'success' ]] || { echo 'general failed'; exit 1; }
+            [[ '${{ needs.cargo_shear.result }}' == 'success' ]] || { echo 'cargo_shear failed'; exit 1; }
             exit 0
           fi
 
