@@ -1711,7 +1711,7 @@ async fn turn_started_uses_runtime_context_window_before_first_token_count() {
 
     assert_eq!(
         chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::ContextWindowSize),
-        Some("950K window".to_string())
+        Some(vec!["950K window".into()])
     );
     assert_eq!(chat.bottom_pane.context_window_percent(), Some(100));
 
@@ -10513,6 +10513,7 @@ async fn status_line_fast_mode_footer_snapshot() {
     assert_snapshot!("status_line_fast_mode_footer", terminal.backend());
 }
 
+#[tokio::test]
 async fn status_line_default_footer_fast_mode_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
