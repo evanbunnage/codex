@@ -223,7 +223,7 @@ use crate::network_policy_decision::execpolicy_network_rule_amendment;
 use crate::plugins::PluginsManager;
 use crate::plugins::build_plugin_injections;
 use crate::plugins::render_plugins_section;
-use crate::project_doc::get_user_instructions;
+use crate::project_doc::get_user_instructions_for_model;
 use crate::protocol::AgentMessageContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
 use crate::protocol::ApplyPatchApprovalRequestEvent;
@@ -470,8 +470,6 @@ impl Codex {
             config.startup_warnings.push(message);
         }
 
-        let user_instructions = get_user_instructions(&config).await;
-
         let exec_policy = if crate::guardian::is_guardian_subagent_source(&session_source) {
             // Guardian review should rely on the built-in shell safety checks,
             // not on caller-provided exec-policy rules that could shape the
@@ -499,6 +497,8 @@ impl Codex {
         let model = models_manager
             .get_default_model(&config.model, refresh_strategy)
             .await;
+        let user_instructions =
+            get_user_instructions_for_model(&config, Some(model.as_str())).await;
 
         // Resolve base instructions for the session. Priority order:
         // 1. config.base_instructions override
@@ -871,6 +871,8 @@ impl TurnContext {
         .with_web_search_config(self.tools_config.web_search_config.clone())
         .with_allow_login_shell(self.tools_config.allow_login_shell)
         .with_agent_roles(config.agent_roles.clone());
+        let user_instructions =
+            get_user_instructions_for_model(&config, Some(model.as_str())).await;
 
         Self {
             sub_id: self.sub_id.clone(),
@@ -893,7 +895,7 @@ impl TurnContext {
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
             compact_prompt: self.compact_prompt.clone(),
-            user_instructions: self.user_instructions.clone(),
+            user_instructions,
             collaboration_mode,
             personality: self.personality,
             approval_policy: self.approval_policy.clone(),
@@ -1270,6 +1272,7 @@ impl Session {
         shell_zsh_path: Option<&PathBuf>,
         main_execve_wrapper_exe: Option<&PathBuf>,
         per_turn_config: Config,
+        user_instructions: Option<String>,
         model_info: ModelInfo,
         models_manager: &ModelsManager,
         network: Option<NetworkProxy>,
@@ -1335,7 +1338,8 @@ impl Session {
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
-            user_instructions: session_configuration.user_instructions.clone(),
+            user_instructions: user_instructions
+                .or_else(|| session_configuration.user_instructions.clone()),
             collaboration_mode: session_configuration.collaboration_mode.clone(),
             personality: session_configuration.personality,
             approval_policy: session_configuration.approval_policy.clone(),
@@ -2354,6 +2358,11 @@ impl Session {
                 .skills_for_cwd(&session_configuration.cwd, false)
                 .await,
         );
+        let user_instructions = get_user_instructions_for_model(
+            &per_turn_config,
+            Some(session_configuration.collaboration_mode.model()),
+        )
+        .await;
         let mut turn_context: TurnContext = Self::make_turn_context(
             Some(Arc::clone(&self.services.auth_manager)),
             &self.services.session_telemetry,
@@ -2363,6 +2372,7 @@ impl Session {
             self.services.shell_zsh_path.as_ref(),
             self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
+            user_instructions,
             model_info,
             &self.services.models_manager,
             self.services
@@ -5306,6 +5316,8 @@ async fn spawn_review_thread(
     let reasoning_summary = per_turn_config
         .model_reasoning_summary
         .unwrap_or(model_info.default_reasoning_summary);
+    let user_instructions =
+        get_user_instructions_for_model(&per_turn_config, Some(model.as_str())).await;
     let session_source = parent_turn_context.session_source.clone();
 
     let per_turn_config = Arc::new(per_turn_config);
@@ -5336,7 +5348,7 @@ async fn spawn_review_thread(
         timezone: parent_turn_context.timezone.clone(),
         app_server_client_name: parent_turn_context.app_server_client_name.clone(),
         developer_instructions: None,
-        user_instructions: None,
+        user_instructions,
         compact_prompt: parent_turn_context.compact_prompt.clone(),
         collaboration_mode: parent_turn_context.collaboration_mode.clone(),
         personality: parent_turn_context.personality,

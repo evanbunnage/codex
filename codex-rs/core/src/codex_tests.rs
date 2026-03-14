@@ -1795,6 +1795,31 @@ async fn turn_context_with_model_updates_model_fields() {
     ));
 }
 
+#[tokio::test]
+async fn turn_context_with_model_reloads_model_specific_agents_instructions() {
+    let repo = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        repo.path().join("AGENTS.md"),
+        concat!(
+            "<agents-when model=\"gpt-5.1\">for gpt-5.1</agents-when>\n",
+            "<agents-when model=\"gpt-5\">for gpt-5</agents-when>",
+        ),
+    )
+    .unwrap();
+
+    let (session, mut turn_context) = make_session_and_context().await;
+    let mut config = (*turn_context.config).clone();
+    config.cwd = repo.path().to_path_buf();
+    config.project_doc_max_bytes = 4096;
+    turn_context.config = Arc::new(config);
+
+    let updated = turn_context
+        .with_model("gpt-5.1".to_string(), &session.services.models_manager)
+        .await;
+
+    assert_eq!(updated.user_instructions, Some("for gpt-5.1\n".to_string()));
+}
+
 #[test]
 fn falls_back_to_content_when_structured_is_null() {
     let ctr = McpCallToolResult {
@@ -2352,6 +2377,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         services.shell_zsh_path.as_ref(),
         services.main_execve_wrapper_exe.as_ref(),
         per_turn_config,
+        None,
         model_info,
         &models_manager,
         None,
@@ -3027,6 +3053,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         services.shell_zsh_path.as_ref(),
         services.main_execve_wrapper_exe.as_ref(),
         per_turn_config,
+        None,
         model_info,
         &models_manager,
         None,

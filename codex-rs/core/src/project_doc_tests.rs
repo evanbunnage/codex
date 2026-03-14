@@ -268,6 +268,46 @@ async fn concatenates_root_and_cwd_docs() {
 }
 
 #[tokio::test]
+async fn agents_when_includes_only_exact_matching_model_blocks() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        tmp.path().join("AGENTS.md"),
+        concat!(
+            "always\n",
+            "<agents-when model=\"gpt-5.4\">for gpt-5.4</agents-when>\n",
+            "<agents-when model=\"o3\">for o3</agents-when>",
+        ),
+    )
+    .unwrap();
+
+    let mut cfg = make_config(&tmp, 4096, None).await;
+    cfg.model = Some("gpt-5.4".to_string());
+
+    let res = get_user_instructions(&cfg).await.expect("doc expected");
+    assert_eq!(res, "always\nfor gpt-5.4\n");
+}
+
+#[tokio::test]
+async fn agents_when_omits_non_matching_exact_model_blocks() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        tmp.path().join("AGENTS.md"),
+        concat!(
+            "always\n",
+            "<agents-when model=\"gpt-5.4\">for gpt-5.4</agents-when>\n",
+            "<agents-when model=\"gpt-5\">for gpt-5</agents-when>",
+        ),
+    )
+    .unwrap();
+
+    let mut cfg = make_config(&tmp, 4096, None).await;
+    cfg.model = Some("gpt-5".to_string());
+
+    let res = get_user_instructions(&cfg).await.expect("doc expected");
+    assert_eq!(res, "always\n\nfor gpt-5");
+}
+
+#[tokio::test]
 async fn project_root_markers_are_honored_for_agents_discovery() {
     let root = tempfile::tempdir().expect("tempdir");
     fs::write(root.path().join(".codex-root"), "").unwrap();

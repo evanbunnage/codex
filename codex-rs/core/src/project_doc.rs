@@ -23,10 +23,12 @@ use crate::config_loader::project_root_markers_from_config;
 use crate::features::Feature;
 use codex_app_server_protocol::ConfigLayerSource;
 use dunce::canonicalize as normalize_path;
+use std::path::Path;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use toml::Value as TomlValue;
 use tracing::error;
+use tracing::warn;
 
 pub(crate) const HIERARCHICAL_AGENTS_MESSAGE: &str =
     include_str!("../hierarchical_agents_message.md");
@@ -39,6 +41,8 @@ pub const LOCAL_PROJECT_DOC_FILENAME: &str = "AGENTS.override.md";
 /// When both `Config::instructions` and the project doc are present, they will
 /// be concatenated with the following separator.
 const PROJECT_DOC_SEPARATOR: &str = "\n\n--- project-doc ---\n\n";
+const AGENTS_WHEN_OPEN_TAG: &str = "<agents-when";
+const AGENTS_WHEN_CLOSE_TAG: &str = "</agents-when>";
 
 fn render_js_repl_instructions(config: &Config) -> Option<String> {
     if !config.features.enabled(Feature::JsRepl) {
@@ -76,8 +80,16 @@ fn render_js_repl_instructions(config: &Config) -> Option<String> {
 
 /// Combines `Config::instructions` and `AGENTS.md` (if present) into a single
 /// string of instructions.
+#[cfg(test)]
 pub(crate) async fn get_user_instructions(config: &Config) -> Option<String> {
-    let project_docs = read_project_docs(config).await;
+    get_user_instructions_for_model(config, config.model.as_deref()).await
+}
+
+pub(crate) async fn get_user_instructions_for_model(
+    config: &Config,
+    model: Option<&str>,
+) -> Option<String> {
+    let project_docs = read_project_docs_for_model(config, model).await;
 
     let mut output = String::new();
 
@@ -126,6 +138,13 @@ pub(crate) async fn get_user_instructions(config: &Config) -> Option<String> {
 /// function returns `Ok(None)`. Unexpected I/O failures bubble up as `Err` so
 /// callers can decide how to handle them.
 pub async fn read_project_docs(config: &Config) -> std::io::Result<Option<String>> {
+    read_project_docs_for_model(config, config.model.as_deref()).await
+}
+
+pub async fn read_project_docs_for_model(
+    config: &Config,
+    model: Option<&str>,
+) -> std::io::Result<Option<String>> {
     let max_total = config.project_doc_max_bytes;
 
     if max_total == 0 {
@@ -165,6 +184,7 @@ pub async fn read_project_docs(config: &Config) -> std::io::Result<Option<String
         }
 
         let text = String::from_utf8_lossy(&data).to_string();
+        let text = filter_agents_when_sections(&text, model, &p);
         if !text.trim().is_empty() {
             parts.push(text);
             remaining = remaining.saturating_sub(data.len() as u64);
@@ -285,6 +305,75 @@ fn candidate_filenames<'a>(config: &'a Config) -> Vec<&'a str> {
         }
     }
     names
+}
+
+fn filter_agents_when_sections(text: &str, model: Option<&str>, path: &Path) -> String {
+    let mut rendered = String::new();
+    let mut cursor = 0;
+
+    while let Some(start_offset) = text[cursor..].find(AGENTS_WHEN_OPEN_TAG) {
+        let start = cursor + start_offset;
+        rendered.push_str(&text[cursor..start]);
+
+        let after_start = &text[start..];
+        let Some(tag_end_rel) = after_start.find('>') else {
+            warn!(
+                path = %path.display(),
+                "unterminated <agents-when> tag in project doc; leaving remainder unchanged"
+            );
+            rendered.push_str(after_start);
+            return rendered;
+        };
+
+        let tag = &after_start[..=tag_end_rel];
+        let Some(body_end_rel) = after_start[tag_end_rel + 1..].find(AGENTS_WHEN_CLOSE_TAG) else {
+            warn!(
+                path = %path.display(),
+                "missing </agents-when> in project doc; leaving remainder unchanged"
+            );
+            rendered.push_str(after_start);
+            return rendered;
+        };
+
+        let body_start = start + tag_end_rel + 1;
+        let body_end = body_start + body_end_rel;
+        let body = &text[body_start..body_end];
+
+        match extract_agents_when_model(tag) {
+            Some(block_model) if Some(block_model.as_str()) == model => rendered.push_str(body),
+            Some(_) => {}
+            None => {
+                warn!(
+                    path = %path.display(),
+                    tag,
+                    "invalid <agents-when> tag in project doc; leaving block unchanged"
+                );
+                rendered.push_str(&text[start..body_end + AGENTS_WHEN_CLOSE_TAG.len()]);
+            }
+        }
+
+        cursor = body_end + AGENTS_WHEN_CLOSE_TAG.len();
+    }
+
+    rendered.push_str(&text[cursor..]);
+    rendered
+}
+
+fn extract_agents_when_model(tag: &str) -> Option<String> {
+    let attrs = tag
+        .strip_prefix(AGENTS_WHEN_OPEN_TAG)?
+        .strip_suffix('>')?
+        .trim();
+    let attrs = attrs.trim_end_matches('/').trim();
+    for attr in attrs.split_ascii_whitespace() {
+        if let Some(value) = attr
+            .strip_prefix("model=\"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
